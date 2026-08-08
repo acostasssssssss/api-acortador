@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    container_name: linkforge-app
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/urlshortener
+      - REDIS_URL=redis://redis:6379/0
+      - BASE_URL=http://localhost:8000
+      - DEBUG=true
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./app:/app/app
+    networks:
+      - linkforge-net
+
+  db:
+    image: postgres:16-alpine
+    container_name: linkforge-db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=urlshortener
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - linkforge-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: linkforge-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - linkforge-net
+
+volumes:
+  postgres_data:
+
+networks:
+  linkforge-net:
+    driver: bridge
