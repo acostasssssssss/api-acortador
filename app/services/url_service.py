@@ -2,15 +2,16 @@
 Lógica de negocio central del acortador.
 Desacopla slugs de destinos para permitir edición total.
 """
-from datetime import datetime, timezone  # ← agregado 'timezone'
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 from fastapi import HTTPException
 
 from app.models.url import Destination, Slug, Click, DestinationHistory, SlugHistory
-from app.schemas.url import URLCreate, URLEditSlug, URLEditDestination
+from app.schemas.url import URLCreate, URLEditSlug, URLEditDestination, BatchInfoRequest
 from app.core.security import generate_edit_token, generate_slug_code, hash_ip
 from app.config import get_settings
 
@@ -24,11 +25,11 @@ class URLService:
     async def create_url(db: AsyncSession, data: URLCreate) -> dict:
         """
         Crea un nuevo acortado.
-        Si custom_slug se proporciona, se usa; si no, se genera uno aleatorio.
+        Si no se envía expires_at, se pone por defecto: ahora + 6 días.
         """
         target_url = str(data.target_url)
 
-        # Verificar si ya existe el destino (deduplicación opcional)
+        # Verificar si ya existe el destino
         result = await db.execute(
             select(Destination).where(Destination.target_url == target_url)
         )
@@ -37,19 +38,17 @@ class URLService:
         if not destination:
             destination = Destination(target_url=target_url)
             db.add(destination)
-            await db.flush()  # Obtener ID sin commit
+            await db.flush()
 
         # Generar o validar slug
         slug_code = data.custom_slug
         if slug_code:
-            # Verificar que no exista
             existing = await db.execute(
                 select(Slug).where(Slug.code == slug_code)
             )
             if existing.scalar_one_or_none():
                 raise HTTPException(status_code=409, detail="Slug ya existe. Prueba otro.")
         else:
-            # Generar slug único
             while True:
                 slug_code = generate_slug_code()
                 existing = await db.execute(
@@ -58,6 +57,11 @@ class URLService:
                 if not existing.scalar_one_or_none():
                     break
 
+        # Calcular expiración por defecto: 6 días
+        expires_at = data.expires_at
+        if expires_at is None:
+            expires_at = datetime.now(timezone.utc) + timedelta(days=6)
+
         edit_token = generate_edit_token()
 
         slug = Slug(
@@ -65,7 +69,7 @@ class URLService:
             destination_id=destination.id,
             edit_token=edit_token,
             redirect_type=data.redirect_type,
-            expires_at=data.expires_at,
+            expires_at=expires_at,
         )
         db.add(slug)
         await db.commit()
@@ -84,7 +88,7 @@ class URLService:
 
     @staticmethod
     async def get_by_slug(db: AsyncSession, slug_code: str) -> Optional[Slug]:
-        """Obtiene un slug por su código."""
+        """Obtiene un slug activo por su código."""
         result = await db.execute(
             select(Slug)
             .where(Slug.code == slug_code)
@@ -94,20 +98,15 @@ class URLService:
 
     @staticmethod
     async def redirect(db: AsyncSession, slug_code: str, request_info: dict) -> str:
-        """
-        Procesa una redirección y registra analytics.
-        Retorna la URL destino.
-        """
+        """Procesa redirección y registra analytics."""
         slug = await URLService.get_by_slug(db, slug_code)
 
         if not slug:
             raise HTTPException(status_code=404, detail="Slug no encontrado o inactivo.")
 
-        # Verificar expiración ← CAMBIO AQUÍ
         if slug.expires_at and slug.expires_at < datetime.now(timezone.utc):
             raise HTTPException(status_code=410, detail="Este link ha expirado.")
 
-        # Registrar click
         click = Click(
             slug_id=slug.id,
             ip_hash=hash_ip(request_info.get("ip", "unknown")),
@@ -122,10 +121,7 @@ class URLService:
 
     @staticmethod
     async def edit_slug(db: AsyncSession, slug_code: str, data: URLEditSlug) -> dict:
-        """
-        Renombra un slug existente.
-        Preserva analytics porque los clicks apuntan a slug_id (UUID), no al code.
-        """
+        """Renombra un slug existente. Preserva analytics."""
         result = await db.execute(select(Slug).where(Slug.code == slug_code))
         slug = result.scalar_one_or_none()
 
@@ -135,13 +131,11 @@ class URLService:
         if slug.edit_token != data.edit_token:
             raise HTTPException(status_code=403, detail="Token de edición inválido.")
 
-        # Verificar que el nuevo slug no exista
         new_code = data.new_slug
         existing = await db.execute(select(Slug).where(Slug.code == new_code))
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=409, detail="Nuevo slug ya está en uso.")
 
-        # Guardar historial
         history = SlugHistory(
             slug_id=slug.id,
             old_code=slug.code,
@@ -149,7 +143,6 @@ class URLService:
         )
         db.add(history)
 
-        # Actualizar slug
         old_code = slug.code
         slug.code = new_code
         await db.commit()
@@ -166,10 +159,7 @@ class URLService:
     async def edit_destination(
         db: AsyncSession, slug_code: str, data: URLEditDestination
     ) -> dict:
-        """
-        Cambia la URL destino de un slug.
-        El slug sigue funcionando, ahora apunta al nuevo destino.
-        """
+        """Cambia la URL destino de un slug."""
         result = await db.execute(
             select(Slug).where(Slug.code == slug_code)
         )
@@ -184,7 +174,6 @@ class URLService:
         new_target = str(data.new_target_url)
         old_target = slug.destination.target_url
 
-        # Guardar historial
         history = DestinationHistory(
             destination_id=slug.destination_id,
             old_target_url=old_target,
@@ -192,7 +181,6 @@ class URLService:
         )
         db.add(history)
 
-        # Actualizar destino ← CAMBIO AQUÍ
         slug.destination.target_url = new_target
         slug.destination.updated_at = datetime.now(timezone.utc)
         await db.commit()
@@ -215,20 +203,17 @@ class URLService:
         if not slug:
             raise HTTPException(status_code=404, detail="Slug no encontrado.")
 
-        # Total clicks
         total = await db.execute(
             select(func.count(Click.id)).where(Click.slug_id == slug.id)
         )
         total_clicks = total.scalar()
 
-        # Clicks únicos (por ip_hash)
         unique = await db.execute(
             select(func.count(func.distinct(Click.ip_hash)))
             .where(Click.slug_id == slug.id)
         )
         unique_clicks = unique.scalar()
 
-        # Último click
         last = await db.execute(
             select(Click.clicked_at)
             .where(Click.slug_id == slug.id)
@@ -265,11 +250,7 @@ class URLService:
 
     @staticmethod
     async def list_all_urls(db: AsyncSession) -> dict:
-        """
-        Lista todos los slugs activos con sus stats básicas.
-        """
-        from sqlalchemy.orm import joinedload
-
+        """Lista todos los slugs activos con stats básicas."""
         result = await db.execute(
             select(Slug)
             .options(joinedload(Slug.destination))
@@ -280,7 +261,6 @@ class URLService:
 
         items = []
         for slug in slugs:
-            # Contar clicks
             total = await db.execute(
                 select(func.count(Click.id)).where(Click.slug_id == slug.id)
             )
@@ -298,7 +278,83 @@ class URLService:
                 "expires_at": slug.expires_at,
             })
 
+        return {"items": items, "total": len(items)}
+
+    @staticmethod
+    async def batch_info(db: AsyncSession, data: BatchInfoRequest) -> dict:
+        """
+        Consulta info de múltiples slugs en una sola request.
+        """
+        result = await db.execute(
+            select(Slug)
+            .options(joinedload(Slug.destination))
+            .where(Slug.code.in_(data.slugs))
+            .where(Slug.is_active == True)
+        )
+        slugs = result.unique().scalars().all()
+
+        items = []
+        for slug in slugs:
+            total = await db.execute(
+                select(func.count(Click.id)).where(Click.slug_id == slug.id)
+            )
+            total_clicks = total.scalar() or 0
+
+            items.append({
+                "slug": slug.code,
+                "short_url": f"{settings.BASE_URL}/{slug.code}",
+                "target_url": slug.destination.target_url,
+                "redirect_type": slug.redirect_type,
+                "is_active": slug.is_active,
+                "expires_at": slug.expires_at,
+                "total_clicks": total_clicks,
+            })
+
+        return {"items": items}
+
+    @staticmethod
+    async def get_history(db: AsyncSession, slug_code: str) -> dict:
+        """Obtiene historial de renombrados y cambios de destino."""
+        result = await db.execute(
+            select(Slug)
+            .options(joinedload(Slug.destination))
+            .where(Slug.code == slug_code)
+        )
+        slug = result.unique().scalar_one_or_none()
+
+        if not slug:
+            raise HTTPException(status_code=404, detail="Slug no encontrado.")
+
+        slug_hist_result = await db.execute(
+            select(SlugHistory)
+            .where(SlugHistory.slug_id == slug.id)
+            .order_by(desc(SlugHistory.changed_at))
+        )
+        slug_history = [
+            {
+                "old_code": h.old_code,
+                "new_code": h.new_code,
+                "changed_at": h.changed_at,
+            }
+            for h in slug_hist_result.scalars().all()
+        ]
+
+        dest_hist_result = await db.execute(
+            select(DestinationHistory)
+            .where(DestinationHistory.destination_id == slug.destination_id)
+            .order_by(desc(DestinationHistory.changed_at))
+        )
+        destination_history = [
+            {
+                "old_target_url": h.old_target_url,
+                "new_target_url": h.new_target_url,
+                "changed_at": h.changed_at,
+            }
+            for h in dest_hist_result.scalars().all()
+        ]
+
         return {
-            "items": items,
-            "total": len(items),
+            "slug": slug_code,
+            "slug_history": slug_history,
+            "destination_history": destination_history,
         }

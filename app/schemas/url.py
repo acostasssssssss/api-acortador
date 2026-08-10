@@ -146,3 +146,42 @@ class URLHistoryResponse(BaseModel):
     slug: str
     slug_history: list[SlugHistoryItem]
     destination_history: list[DestinationHistoryItem]
+
+class URLCreate(BaseModel):
+    """Request para crear un acortado."""
+    target_url: HttpUrl = Field(..., description="URL de destino")
+    custom_slug: Optional[str] = Field(
+        None,
+        min_length=settings.MIN_SLUG_LENGTH,
+        max_length=settings.MAX_SLUG_LENGTH,
+        description="Slug personalizado (opcional)"
+    )
+    redirect_type: str = Field(
+        default="307",
+        pattern="^(301|307)$",
+        description="Tipo de redirección: 301 (permanente) o 307 (temporal)"
+    )
+    expires_at: Optional[datetime] = Field(
+        None,
+        description="Fecha de expiración (default: 6 días)"
+    )
+
+class BatchInfoRequest(BaseModel):
+    """Request para consultar info de múltiples slugs."""
+    slugs: list[str] = Field(..., min_length=1, max_length=50)
+
+
+class BatchInfoItem(BaseModel):
+    """Info de un slug en batch."""
+    slug: str
+    short_url: str
+    target_url: str
+    redirect_type: str
+    is_active: bool
+    expires_at: Optional[datetime] = None
+    total_clicks: int
+
+
+class BatchInfoResponse(BaseModel):
+    """Respuesta batch."""
+    items: list[BatchInfoItem]
