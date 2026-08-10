@@ -262,3 +262,43 @@ class URLService:
         await db.commit()
 
         return {"message": "Slug desactivado correctamente.", "slug": slug_code}
+
+    @staticmethod
+    async def list_all_urls(db: AsyncSession) -> dict:
+        """
+        Lista todos los slugs activos con sus stats básicas.
+        """
+        from sqlalchemy.orm import joinedload
+
+        result = await db.execute(
+            select(Slug)
+            .options(joinedload(Slug.destination))
+            .where(Slug.is_active == True)
+            .order_by(desc(Slug.created_at))
+        )
+        slugs = result.unique().scalars().all()
+
+        items = []
+        for slug in slugs:
+            # Contar clicks
+            total = await db.execute(
+                select(func.count(Click.id)).where(Click.slug_id == slug.id)
+            )
+            total_clicks = total.scalar() or 0
+
+            items.append({
+                "id": str(slug.id),
+                "slug": slug.code,
+                "short_url": f"{settings.BASE_URL}/{slug.code}",
+                "target_url": slug.destination.target_url,
+                "redirect_type": slug.redirect_type,
+                "is_active": slug.is_active,
+                "total_clicks": total_clicks,
+                "created_at": slug.created_at,
+                "expires_at": slug.expires_at,
+            })
+
+        return {
+            "items": items,
+            "total": len(items),
+        }

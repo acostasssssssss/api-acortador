@@ -99,3 +99,50 @@ class URLList(BaseModel):
     total: int
     page: int
     page_size: int
+
+class URLListItem(BaseModel):
+    """Item de la lista de URLs acortadas."""
+    id: str
+    slug: str
+    short_url: str
+    target_url: str
+    redirect_type: str
+    is_active: bool
+    total_clicks: int
+    created_at: datetime
+    expires_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class URLListResponse(BaseModel):
+    """Respuesta paginada de lista de URLs."""
+    items: list[URLListItem]
+    total: int
+
+class SlugHistoryItem(BaseModel):
+    """Item del historial de renombrados de slug."""
+    old_code: str
+    new_code: str
+    changed_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DestinationHistoryItem(BaseModel):
+    """Item del historial de cambios de destino."""
+    old_target_url: str
+    new_target_url: str
+    changed_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class URLHistoryResponse(BaseModel):
+    """Respuesta con historial completo de un slug."""
+    slug: str
+    slug_history: list[SlugHistoryItem]
+    destination_history: list[DestinationHistoryItem]

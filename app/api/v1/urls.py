@@ -7,7 +7,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.url import (
-    URLCreate, URLResponse, URLEditSlug, URLEditDestination
+    URLCreate, URLHistoryResponse, URLListResponse, URLResponse, URLEditSlug, URLEditDestination
 )
 from app.services.url_service import URLService
 from app.dependencies import get_request_info, get_db_session
@@ -132,3 +132,31 @@ async def get_url_info(
         "expires_at": slug.expires_at,
         "is_active": slug.is_active,
     }
+
+@router.get("/", response_model=URLListResponse)
+async def list_all_short_urls(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Lista todos los links acortados activos con sus estadísticas básicas.
+
+    - Incluye slug, destino, clicks totales, fecha de creación
+    - Ordenados por más recientes primero
+    """
+    return await URLService.list_all_urls(db)
+
+
+@router.get("/{slug_code}/history", response_model=URLHistoryResponse)
+async def get_url_history(
+    slug_code: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Obtiene el historial completo de un acortado:
+
+    - **slug_history**: Lista de renombrados (old_code → new_code)
+    - **destination_history**: Lista de cambios de URL destino
+
+    Útil para auditoría y transparencia.
+    """
+    return await URLService.get_history(db, slug_code)
