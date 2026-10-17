@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres@localhost:5432/cortlink_db"
     DB_ECHO: bool = False
 
-    # Redis LOCAL
-    REDIS_URL: str = "redis://localhost:6379/0"
+    # Redis (opcional)
+    REDIS_URL: str | None = None
 
     # Seguridad
     SECRET_KEY: str = "change-me-in-production-please"

@@ -8,11 +8,13 @@ from app.config import get_settings
 
 settings = get_settings()
 
-# Engine async
+# Engine async configurado para reconexión bajo demanda (ideal para serverless y local)
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DB_ECHO,
     future=True,
+    pool_pre_ping=True,
+    pool_recycle=300,
 )
 
 # Session factory
