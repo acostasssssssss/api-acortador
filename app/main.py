@@ -8,14 +8,16 @@ import os
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.router import router as api_router
+from app.api.v1.urls import get_db_session, redirect_to_url
 from app.config import get_settings
+from app.core.logger import logger
 from app.db.session import engine, init_db
 
-logger = logging.getLogger("uvicorn")
 settings = get_settings()
 
 
@@ -48,12 +50,15 @@ async def keep_alive_task():
 async def lifespan(app: FastAPI):
     """Gestión del ciclo de vida de la app."""
     # Startup
-    logger.info("Iniciando %s v%s...", settings.APP_NAME, settings.APP_VERSION)
+    logger.info("==================================================")
+    logger.info("[LinkForge] %s v%s iniciando...", settings.APP_NAME, settings.APP_VERSION)
+    logger.info("[Docs] Documentacion interactiva en: /docs")
+    logger.info("==================================================")
     try:
         await init_db()
-        logger.info("Base de datos verificada/inicializada correctamente.")
+        logger.info("[Database] Tablas verificadas/inicializadas correctamente.")
     except Exception as e:
-        logger.warning("No se pudo conectar/inicializar DB en startup: %s", e)
+        logger.warning("[Database] No se pudo conectar/inicializar DB en startup: %s", e)
 
     # ── Self-Ping para Render (Keep-Alive inteligente) ──
     keep_alive_task_handle = None
@@ -116,3 +121,13 @@ async def root():
         "status": "online",
         "docs": "/docs",
     }
+
+
+@app.get("/{slug_code}", tags=["Redirect"], include_in_schema=False)
+async def root_redirect(
+    slug_code: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Redirige al destino original desde la raíz del dominio."""
+    return await redirect_to_url(slug_code, request, db)

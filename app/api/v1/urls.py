@@ -15,7 +15,7 @@ from app.schemas.url import (
     BatchInfoRequest,
     BatchInfoResponse,
 )
-from app.services.url_service import URLService
+from app.services.url_service import URLService, get_base_url
 from app.dependencies import get_request_info, get_db_session
 
 router = APIRouter()
@@ -27,17 +27,19 @@ router = APIRouter()
 
 @router.get("/", response_model=URLListResponse)
 async def list_all_short_urls(
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """
     Lista todos los links acortados activos con sus estadísticas básicas.
     """
-    return await URLService.list_all_urls(db)
+    return await URLService.list_all_urls(db, request=request)
 
 
 @router.post("/shorten", response_model=URLResponse, status_code=201)
 async def create_short_url(
     data: URLCreate,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """
@@ -50,20 +52,21 @@ async def create_short_url(
 
     Retorna el **edit_token** necesario para modificar.
     """
-    result = await URLService.create_url(db, data)
+    result = await URLService.create_url(db, data, request=request)
     return result
 
 
 @router.post("/batch-info", response_model=BatchInfoResponse)
 async def get_batch_info(
     data: BatchInfoRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """
     Consulta info de múltiples slugs en una sola request.
     Útil para que el frontend cargue "mis links" desde localStorage.
     """
-    return await URLService.batch_info(db, data)
+    return await URLService.batch_info(db, data, request=request)
 
 
 # ============================================================
@@ -86,6 +89,7 @@ async def get_url_history(
 @router.get("/{slug_code}/info", response_model=URLResponse)
 async def get_url_info(
     slug_code: str,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """Obtiene información de un acortado sin redirigir."""
@@ -94,11 +98,10 @@ async def get_url_info(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Slug no encontrado.")
 
-    from app.config import get_settings
-    settings = get_settings()
+    base_url = get_base_url(request)
 
     return {
-        "short_url": f"{settings.BASE_URL}/{slug.code}",
+        "short_url": f"{base_url}/{slug.code}",
         "slug": slug.code,
         "target_url": slug.destination.target_url,
         "edit_token": slug.edit_token,
@@ -113,12 +116,13 @@ async def get_url_info(
 async def edit_slug_name(
     slug_code: str,
     data: URLEditSlug,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """
     Renombra el slug. Preserva analytics.
     """
-    return await URLService.edit_slug(db, slug_code, data)
+    return await URLService.edit_slug(db, slug_code, data, request=request)
 
 
 @router.patch("/{slug_code}/destination", response_model=dict)

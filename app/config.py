@@ -2,8 +2,10 @@
 Configuración centralizada usando pydantic-settings.
 Soporta variables de entorno y valores por defecto.
 """
-from pydantic_settings import BaseSettings
+import os
 from functools import lru_cache
+from pydantic import field_validator
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -14,8 +16,13 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
 
-    # Base URL del acortador
-    BASE_URL: str = "http://localhost:8000"
+    # Base URL del acortador (opcional: si no se define, se detecta 100% dinámico desde cada petición)
+    BASE_URL: str | None = None
+
+    @field_validator("BASE_URL")
+    @classmethod
+    def clean_base_url(cls, v: str | None) -> str | None:
+        return v.rstrip("/") if v else None
 
     # Database LOCAL (tu DB: cortlink_db)
     # Si tienes password, agrégalo: postgresql+asyncpg://postgres:TU_PASSWORD@localhost:5432/cortlink_db
