@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     # Database LOCAL (tu DB: cortlink_db)
     # Si tienes password, agrégalo: postgresql+asyncpg://postgres:TU_PASSWORD@localhost:5432/cortlink_db
     DATABASE_URL: str = "postgresql+asyncpg://postgres@localhost:5432/cortlink_db"
+    DB_ECHO: bool = False
 
     # Redis LOCAL
     REDIS_URL: str = "redis://localhost:6379/0"
