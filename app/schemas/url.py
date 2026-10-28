@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from app.config import get_settings
 
@@ -26,7 +26,10 @@ class URLCreate(BaseModel):
         pattern="^(301|307)$",
         description="Tipo de redirección: 301 (permanente) o 307 (temporal)"
     )
-    expires_at: Optional[datetime] = Field(None, description="Fecha de expiración")
+    expires_at: Optional[datetime] = Field(
+        None,
+        description="Fecha de expiración opcional (permanente si el usuario inició sesión; 6 días si es anónimo)",
+    )
 
     @field_validator("custom_slug")
     @classmethod
@@ -44,14 +47,14 @@ class URLResponse(BaseModel):
     short_url: str = Field(..., description="URL completa del acortado")
     slug: str = Field(..., description="Código del slug")
     target_url: str = Field(..., description="URL de destino actual")
-    edit_token: str = Field(..., description="Token secreto para editar")
+    edit_token: Optional[str] = Field(None, description="Token secreto para editar")
     redirect_type: str = Field(..., description="301 o 307")
     created_at: datetime
     expires_at: Optional[datetime] = None
     is_active: bool
+    user_id: Optional[UUID] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class URLEditSlug(BaseModel):
@@ -62,7 +65,10 @@ class URLEditSlug(BaseModel):
         max_length=settings.MAX_SLUG_LENGTH,
         description="Nuevo slug"
     )
-    edit_token: str = Field(..., description="Token de edición")
+    edit_token: Optional[str] = Field(
+        None,
+        description="Token de edición (opcional si eres el usuario propietario autenticado)",
+    )
 
     @field_validator("new_slug")
     @classmethod
@@ -75,7 +81,10 @@ class URLEditSlug(BaseModel):
 class URLEditDestination(BaseModel):
     """Request para cambiar la URL destino."""
     new_target_url: HttpUrl = Field(..., description="Nueva URL de destino")
-    edit_token: str = Field(..., description="Token de edición")
+    edit_token: Optional[str] = Field(
+        None,
+        description="Token de edición (opcional si eres el usuario propietario autenticado)",
+    )
 
 
 class URLStats(BaseModel):
@@ -89,8 +98,7 @@ class URLStats(BaseModel):
     top_referrers: list[dict] = []
     clicks_by_day: list[dict] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class URLList(BaseModel):
@@ -112,8 +120,7 @@ class URLListItem(BaseModel):
     created_at: datetime
     expires_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class URLListResponse(BaseModel):
@@ -127,8 +134,7 @@ class SlugHistoryItem(BaseModel):
     new_code: str
     changed_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DestinationHistoryItem(BaseModel):
@@ -137,8 +143,7 @@ class DestinationHistoryItem(BaseModel):
     new_target_url: str
     changed_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class URLHistoryResponse(BaseModel):
@@ -146,25 +151,6 @@ class URLHistoryResponse(BaseModel):
     slug: str
     slug_history: list[SlugHistoryItem]
     destination_history: list[DestinationHistoryItem]
-
-class URLCreate(BaseModel):
-    """Request para crear un acortado."""
-    target_url: HttpUrl = Field(..., description="URL de destino")
-    custom_slug: Optional[str] = Field(
-        None,
-        min_length=settings.MIN_SLUG_LENGTH,
-        max_length=settings.MAX_SLUG_LENGTH,
-        description="Slug personalizado (opcional)"
-    )
-    redirect_type: str = Field(
-        default="307",
-        pattern="^(301|307)$",
-        description="Tipo de redirección: 301 (permanente) o 307 (temporal)"
-    )
-    expires_at: Optional[datetime] = Field(
-        None,
-        description="Fecha de expiración (default: 6 días)"
-    )
 
 class BatchInfoRequest(BaseModel):
     """Request para consultar info de múltiples slugs."""

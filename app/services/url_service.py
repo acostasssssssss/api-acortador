@@ -12,6 +12,7 @@ from sqlalchemy.orm import joinedload
 from fastapi import HTTPException, Request
 
 from app.models.url import Destination, Slug, Click, DestinationHistory, SlugHistory
+from app.models.user import User
 from app.schemas.url import URLCreate, URLEditSlug, URLEditDestination, BatchInfoRequest
 from app.core.security import generate_edit_token, generate_slug_code, hash_ip
 from app.config import get_settings
@@ -44,23 +45,74 @@ class URLService:
     """Servicio para gestionar URLs acortadas."""
 
     @staticmethod
-    async def create_url(db: AsyncSession, data: URLCreate, request: Optional[Request] = None) -> dict:
+    def _authorize_slug_mutation(
+        slug: Slug,
+        current_user: Optional[User] = None,
+        edit_token: Optional[str] = None,
+    ) -> None:
+        """
+        Verifica que quien modifica o elimina un enlace tenga permiso:
+        - Si el enlace pertenece a una cuenta (user_id != None):
+          * El propietario autenticado tiene acceso directo.
+          * Otra cuenta autenticada recibe 403 (aislamiento multi-tenant).
+          * Sin sesión, se permite solo si presenta el edit_token válido del enlace.
+        - Si el enlace es anónimo (user_id == None):
+          * Requiere edit_token válido.
+        """
+        if slug.user_id is not None:
+            if current_user is not None:
+                if slug.user_id != current_user.id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="No tienes permiso para modificar un enlace de otra cuenta.",
+                    )
+                return
+            if edit_token and slug.edit_token == edit_token:
+                return
+            raise HTTPException(
+                status_code=403,
+                detail="Debes iniciar sesión con la cuenta propietaria o proporcionar un token de edición válido.",
+            )
+
+        if not edit_token or slug.edit_token != edit_token:
+            raise HTTPException(status_code=403, detail="Token de edición inválido.")
+
+    @staticmethod
+    def _authorize_slug_tenant_access(
+        slug: Slug,
+        current_user: Optional[User] = None,
+    ) -> None:
+        """Evita que una cuenta autenticada consulte detalles privados de otra cuenta."""
+        if (
+            slug.user_id is not None
+            and current_user is not None
+            and slug.user_id != current_user.id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="No tienes permiso para acceder a un enlace de otra cuenta.",
+            )
+
+    @staticmethod
+    async def create_url(
+        db: AsyncSession,
+        data: URLCreate,
+        request: Optional[Request] = None,
+        current_user: Optional[User] = None,
+    ) -> dict:
         """
         Crea un nuevo acortado.
-        Si no se envía expires_at, se pone por defecto: ahora + 6 días.
+        - Con sesión iniciada: el enlace pertenece al usuario y es permanente (sin expiración automática)
+          salvo que el usuario envíe expires_at explícitamente.
+        - Sin sesión (anónimo): expira por defecto en 6 días.
         """
         target_url = str(data.target_url)
 
-        # Verificar si ya existe el destino
-        result = await db.execute(
-            select(Destination).where(Destination.target_url == target_url)
-        )
-        destination = result.scalar_one_or_none()
-
-        if not destination:
-            destination = Destination(target_url=target_url)
-            db.add(destination)
-            await db.flush()
+        # Crear un Destination dedicado para este enlace para que futuras ediciones
+        # no modifiquen los enlaces de otros usuarios.
+        destination = Destination(target_url=target_url)
+        db.add(destination)
+        await db.flush()
 
         # Generar o validar slug
         slug_code = data.custom_slug
@@ -79,16 +131,19 @@ class URLService:
                 if not existing.scalar_one_or_none():
                     break
 
-        # Calcular expiración por defecto: 6 días
+        # Expiración: permanente para usuarios autenticados; 6 días para enlaces anónimos
         expires_at = data.expires_at
-        if expires_at is None:
-            expires_at = datetime.now(timezone.utc) + timedelta(days=6)
+        if expires_at is None and current_user is None:
+            expires_at = datetime.now(timezone.utc) + timedelta(
+                days=settings.ANONYMOUS_LINK_EXPIRE_DAYS
+            )
 
         edit_token = generate_edit_token()
 
         slug = Slug(
             code=slug_code,
             destination_id=destination.id,
+            user_id=current_user.id if current_user else None,
             edit_token=edit_token,
             redirect_type=data.redirect_type,
             expires_at=expires_at,
@@ -109,6 +164,7 @@ class URLService:
             "created_at": slug.created_at,
             "expires_at": slug.expires_at,
             "is_active": slug.is_active,
+            "user_id": slug.user_id,
         }
 
     @staticmethod
@@ -147,7 +203,13 @@ class URLService:
         return target
 
     @staticmethod
-    async def edit_slug(db: AsyncSession, slug_code: str, data: URLEditSlug, request: Optional[Request] = None) -> dict:
+    async def edit_slug(
+        db: AsyncSession,
+        slug_code: str,
+        data: URLEditSlug,
+        request: Optional[Request] = None,
+        current_user: Optional[User] = None,
+    ) -> dict:
         """Renombra un slug existente. Preserva analytics."""
         result = await db.execute(select(Slug).where(Slug.code == slug_code))
         slug = result.scalar_one_or_none()
@@ -155,8 +217,7 @@ class URLService:
         if not slug:
             raise HTTPException(status_code=404, detail="Slug no encontrado.")
 
-        if slug.edit_token != data.edit_token:
-            raise HTTPException(status_code=403, detail="Token de edición inválido.")
+        URLService._authorize_slug_mutation(slug, current_user=current_user, edit_token=data.edit_token)
 
         new_code = data.new_slug
         existing = await db.execute(select(Slug).where(Slug.code == new_code))
@@ -186,7 +247,10 @@ class URLService:
 
     @staticmethod
     async def edit_destination(
-        db: AsyncSession, slug_code: str, data: URLEditDestination
+        db: AsyncSession,
+        slug_code: str,
+        data: URLEditDestination,
+        current_user: Optional[User] = None,
     ) -> dict:
         """Cambia la URL destino de un slug."""
         result = await db.execute(
@@ -197,21 +261,33 @@ class URLService:
         if not slug:
             raise HTTPException(status_code=404, detail="Slug no encontrado.")
 
-        if slug.edit_token != data.edit_token:
-            raise HTTPException(status_code=403, detail="Token de edición inválido.")
+        URLService._authorize_slug_mutation(slug, current_user=current_user, edit_token=data.edit_token)
 
         new_target = str(data.new_target_url)
         old_target = slug.destination.target_url
 
+        shared_count_result = await db.execute(
+            select(func.count(Slug.id)).where(Slug.destination_id == slug.destination_id)
+        )
+        shared_count = shared_count_result.scalar() or 1
+
+        if shared_count > 1:
+            new_destination = Destination(target_url=new_target)
+            db.add(new_destination)
+            await db.flush()
+            slug.destination_id = new_destination.id
+            target_dest_id = new_destination.id
+        else:
+            slug.destination.target_url = new_target
+            slug.destination.updated_at = datetime.now(timezone.utc)
+            target_dest_id = slug.destination_id
+
         history = DestinationHistory(
-            destination_id=slug.destination_id,
+            destination_id=target_dest_id,
             old_target_url=old_target,
             new_target_url=new_target,
         )
         db.add(history)
-
-        slug.destination.target_url = new_target
-        slug.destination.updated_at = datetime.now(timezone.utc)
         await db.commit()
 
         logger.info("[Edit Dest] Destino cambiado para '%s': '%s' -> '%s'", slug_code, old_target, new_target)
@@ -224,7 +300,11 @@ class URLService:
         }
 
     @staticmethod
-    async def get_stats(db: AsyncSession, slug_code: str) -> dict:
+    async def get_stats(
+        db: AsyncSession,
+        slug_code: str,
+        current_user: Optional[User] = None,
+    ) -> dict:
         """Obtiene estadísticas de un slug."""
         result = await db.execute(
             select(Slug).where(Slug.code == slug_code)
@@ -233,6 +313,8 @@ class URLService:
 
         if not slug:
             raise HTTPException(status_code=404, detail="Slug no encontrado.")
+
+        URLService._authorize_slug_tenant_access(slug, current_user=current_user)
 
         total = await db.execute(
             select(func.count(Click.id)).where(Click.slug_id == slug.id)
@@ -263,7 +345,12 @@ class URLService:
         }
 
     @staticmethod
-    async def delete_slug(db: AsyncSession, slug_code: str, edit_token: str) -> dict:
+    async def delete_slug(
+        db: AsyncSession,
+        slug_code: str,
+        edit_token: Optional[str] = None,
+        current_user: Optional[User] = None,
+    ) -> dict:
         """Soft-delete de un slug."""
         result = await db.execute(select(Slug).where(Slug.code == slug_code))
         slug = result.scalar_one_or_none()
@@ -271,8 +358,7 @@ class URLService:
         if not slug:
             raise HTTPException(status_code=404, detail="Slug no encontrado.")
 
-        if slug.edit_token != edit_token:
-            raise HTTPException(status_code=403, detail="Token de edición inválido.")
+        URLService._authorize_slug_mutation(slug, current_user=current_user, edit_token=edit_token)
 
         slug.is_active = False
         await db.commit()
@@ -282,12 +368,23 @@ class URLService:
         return {"message": "Slug desactivado correctamente.", "slug": slug_code}
 
     @staticmethod
-    async def list_all_urls(db: AsyncSession, request: Optional[Request] = None) -> dict:
-        """Lista todos los slugs activos con stats básicas."""
+    async def list_all_urls(
+        db: AsyncSession,
+        request: Optional[Request] = None,
+        current_user: Optional[User] = None,
+    ) -> dict:
+        """
+        Lista los enlaces activos de la cuenta autenticada (aislamiento multi-tenant).
+        Si no hay sesión iniciada, retorna lista vacía para no exponer enlaces de otros usuarios.
+        """
+        if current_user is None:
+            return {"items": [], "total": 0}
+
         result = await db.execute(
             select(Slug)
             .options(joinedload(Slug.destination))
             .where(Slug.is_active == True)
+            .where(Slug.user_id == current_user.id)
             .order_by(desc(Slug.created_at))
         )
         slugs = result.unique().scalars().all()
@@ -348,7 +445,11 @@ class URLService:
         return {"items": items}
 
     @staticmethod
-    async def get_history(db: AsyncSession, slug_code: str) -> dict:
+    async def get_history(
+        db: AsyncSession,
+        slug_code: str,
+        current_user: Optional[User] = None,
+    ) -> dict:
         """Obtiene historial de renombrados y cambios de destino."""
         result = await db.execute(
             select(Slug)
@@ -359,6 +460,8 @@ class URLService:
 
         if not slug:
             raise HTTPException(status_code=404, detail="Slug no encontrado.")
+
+        URLService._authorize_slug_tenant_access(slug, current_user=current_user)
 
         slug_hist_result = await db.execute(
             select(SlugHistory)

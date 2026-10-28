@@ -1,6 +1,7 @@
 """
 Configuración de base de datos async con SQLAlchemy 2.0.
 """
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 
@@ -44,5 +45,20 @@ async def get_db() -> AsyncSession: # type: ignore
 
 async def init_db():
     """Crea las tablas si no existen (solo para desarrollo)."""
+    import app.models  # noqa: F401 - registra todos los modelos en Base.metadata
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(
+            text(
+                "ALTER TABLE slugs "
+                "ADD COLUMN IF NOT EXISTS user_id UUID "
+                "REFERENCES users(id) ON DELETE CASCADE"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_slugs_user_active "
+                "ON slugs (user_id, is_active)"
+            )
+        )

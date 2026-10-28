@@ -4,7 +4,7 @@ Soporta variables de entorno y valores por defecto.
 """
 import os
 from functools import lru_cache
-from pydantic import field_validator
+from pydantic import ConfigDict, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # Seguridad
     SECRET_KEY: str = "change-me-in-production-please"
     EDIT_TOKEN_LENGTH: int = 32
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 días
+    ANONYMOUS_LINK_EXPIRE_DAYS: int = 6
 
     # Slug generation
     DEFAULT_SLUG_LENGTH: int = 6
@@ -50,9 +53,11 @@ class Settings(BaseSettings):
     TRACK_ANALYTICS: bool = True
     SLUG_RESERVATION_DAYS: int = 30
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = ConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore",
+    )
 
 
 @lru_cache()

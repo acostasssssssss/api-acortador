@@ -44,6 +44,12 @@ class Slug(Base):
     destination_id = Column(
         UUID(as_uuid=True), ForeignKey("destinations.id", ondelete="CASCADE"), nullable=False
     )
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     edit_token = Column(String(64), unique=True, nullable=False, index=True)
     is_active = Column(Boolean, default=True, nullable=False)
     redirect_type = Column(String(3), default="307", nullable=False)  # 301 o 307
@@ -53,11 +59,13 @@ class Slug(Base):
 
     # Relaciones
     destination = relationship("Destination", back_populates="slugs", lazy="selectin")
+    owner = relationship("User", back_populates="slugs", lazy="selectin")
     clicks = relationship("Click", back_populates="slug", lazy="selectin")
     slug_history = relationship("SlugHistory", back_populates="slug", lazy="selectin")
 
     __table_args__ = (
         Index("ix_slugs_code_active", "code", "is_active"),
+        Index("ix_slugs_user_active", "user_id", "is_active"),
     )
 
 
